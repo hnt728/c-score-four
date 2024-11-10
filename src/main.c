@@ -312,42 +312,6 @@ int get_score(const ulong black_board, const ulong white_board, char my_turn) {
     return score;
 }
 
-int minmax(const ulong black_board, const ulong white_board, int depth, char turn, char my_turn) {
-    if (depth == 0) {
-        return get_score(black_board, white_board, my_turn);
-    }
-    char winner = which_is_win(black_board, white_board);
-    if (winner != 'n') {
-        return get_score(black_board, white_board, my_turn);
-    }
-    ulong children_nodes[16][2];
-    int children_nodes_len = get_children(black_board, white_board, turn, children_nodes);
-    if (children_nodes_len == 0) {
-        return get_score(black_board, white_board, my_turn);
-    }
-    if (turn == my_turn) {
-        int max_score = -10000;
-        for (int i=0; i<children_nodes_len; i++) {
-            int score = minmax(children_nodes[i][0], children_nodes[i][1], depth-1,
-                                convert_turn(turn), my_turn);
-            if (score > max_score) {
-                max_score = score;
-            }
-        }
-        return max_score;
-    } else {
-        int min_score = 10000;
-        for (int i=0; i<children_nodes_len; i++) {
-            int score = minmax(children_nodes[i][0], children_nodes[i][1], depth-1,
-                                convert_turn(turn), my_turn);
-            if (score < min_score) {
-                min_score = score;
-            }
-        }
-        return min_score;
-    }
-}
-
 int alphabeta(const ulong black_board, const ulong white_board, int depth, int alpha, int beta,
                 char turn, char my_turn) {
     if (depth == 0 || which_is_win(black_board, white_board) != 'n') {
@@ -544,15 +508,16 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_FAILURE);
         }
     }
-    
-    if (player1 == 'm' && player1 <= 0) {
+
+    if (player1 == 'm' && depth1 <= 0) {
         fprintf(stderr, "Error: When using 'm' for player1, you must specify --player1-depth.\n");
         exit(EXIT_FAILURE);
     }
-    if (player2 == 'm' && player2 <= 0) {
+    if (player2 == 'm' && depth2 <= 0) {
         fprintf(stderr, "Error: When using 'm' for player2, you must specify --player2-depth.\n");
         exit(EXIT_FAILURE);
     }
+
     printf("player1: %c\n", player1);
     printf("player2: %c\n", player2);
     printf("player1-depth: %d\n", depth1);
