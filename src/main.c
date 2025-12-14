@@ -273,9 +273,10 @@ int get_possible_poses_binary(const ulong black_board, const ulong white_board, 
 
 char which_is_win(const ulong black_board, const ulong white_board) {
     for (int i=0; i<76; i++) {
-        if (__builtin_popcountl(black_board & conditions[i]) == 4) {
+        const ulong cond = conditions[i];
+        if ((black_board & cond) == cond) {
             return 'b';
-        } else if (__builtin_popcountl(white_board & conditions[i]) == 4) {
+        } else if ((white_board & cond) == cond) {
             return 'w';
         }
     }
@@ -372,11 +373,12 @@ int get_children(const ulong black_board, const ulong white_board, char my_turn,
 
 int get_score(const ulong black_board, const ulong white_board, char my_turn) {
     int score = 0;
-    if (which_is_win(black_board, white_board) == my_turn) {
+    const char res = which_is_win(black_board, white_board);
+    if (res == my_turn) {
         score = 100;
-    } else if (which_is_win(black_board, white_board) == convert_turn(my_turn)) {
+    } else if (res == convert_turn(my_turn)) {
         score =  -100;
-    } else if (which_is_win(black_board, white_board) == 'd') {
+    } else if (res == 'd') {
         score =  0;
     } else {
         if (my_turn == 'b') {
