@@ -508,7 +508,7 @@ typedef struct {
     ulong white;
     int parent;
     uint32_t visits;
-    float wins;                // from root player's perspective
+    float wins;                // sum of rewards for the player who just moved into this node
     uint8_t child_count;
     uint32_t children[16];
     char turn;                 // player to move at this node ('b'/'w')
@@ -770,7 +770,17 @@ static ulong mcts_act(const ulong black_board, const ulong white_board, char my_
                 uint32_t bp = cur;
                 while (1) {
                     nodes[bp].visits++;
-                    nodes[bp].wins += value;
+                    // Store wins from the perspective of "the player who just moved into this node".
+                    // For a node, that player is always convert_turn(nodes[bp].turn).
+                    // Rollout value is from the root player's perspective (my_turn), so flip when needed.
+                    if (bp == 0) {
+                        // Root has no "just moved" player; its wins is not used for selection anyway.
+                        nodes[bp].wins += value;
+                    } else {
+                        const char just_moved = convert_turn(nodes[bp].turn);
+                        const float add = (just_moved == my_turn) ? value : (1.0f - value);
+                        nodes[bp].wins += add;
+                    }
                     if (nodes[bp].parent < 0) break;
                     bp = (uint32_t)nodes[bp].parent;
                 }
