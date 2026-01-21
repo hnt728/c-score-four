@@ -1,4 +1,5 @@
 import argparse
+import multiprocessing as mp
 import os
 import random
 from pathlib import Path
@@ -14,6 +15,13 @@ from model import PolicyValueNet
 
 from tqdm import tqdm
 
+_WORKER_ENGINE = None
+_WORKER_MCTS = None
+_WORKER_TEMP_MOVES = 0
+_WORKER_SEED_BASE = 0
+_WORKER_LAST_HITS = 0
+_WORKER_LAST_MISSES = 0
+
 
 def load_model(path, device):
     model = PolicyValueNet().to(device)
@@ -25,6 +33,53 @@ def load_model(path, device):
 def save_model(model, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), path)
+
+
+def _cpu_state_dict(model):
+    return {k: v.detach().cpu() for k, v in model.state_dict().items()}
+
+
+def _init_selfplay_worker(model_state, device, sims, mcts_batch, temp_moves, seed_base):
+    global _WORKER_ENGINE, _WORKER_MCTS, _WORKER_TEMP_MOVES, _WORKER_SEED_BASE
+    global _WORKER_LAST_HITS, _WORKER_LAST_MISSES
+    torch.set_num_threads(1)
+    random.seed(seed_base)
+    np.random.seed(seed_base & 0xFFFFFFFF)
+    torch.manual_seed(seed_base)
+    if device.startswith("cuda"):
+        torch.cuda.manual_seed_all(seed_base)
+
+    dev = torch.device(device)
+    model = PolicyValueNet().to(dev)
+    model.load_state_dict(model_state)
+    engine = Engine()
+    mcts = MCTS(engine, model, num_simulations=sims, device=dev, batch_size=mcts_batch)
+
+    _WORKER_ENGINE = engine
+    _WORKER_MCTS = mcts
+    _WORKER_TEMP_MOVES = temp_moves
+    _WORKER_SEED_BASE = seed_base
+    _WORKER_LAST_HITS = 0
+    _WORKER_LAST_MISSES = 0
+
+
+def _selfplay_job(job_id):
+    global _WORKER_ENGINE, _WORKER_MCTS, _WORKER_TEMP_MOVES, _WORKER_SEED_BASE
+    global _WORKER_LAST_HITS, _WORKER_LAST_MISSES
+    seed = _WORKER_SEED_BASE + int(job_id) + 1
+    random.seed(seed)
+    np.random.seed(seed & 0xFFFFFFFF)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    data, result = self_play_game(_WORKER_ENGINE, _WORKER_MCTS, temperature_moves=_WORKER_TEMP_MOVES)
+    hits, misses, _ = _WORKER_MCTS.cache_stats()
+    delta_hits = hits - _WORKER_LAST_HITS
+    delta_misses = misses - _WORKER_LAST_MISSES
+    _WORKER_LAST_HITS = hits
+    _WORKER_LAST_MISSES = misses
+    return data, result, delta_hits, delta_misses
 
 
 def self_play_game(engine, mcts, temperature_moves=8):
@@ -213,14 +268,42 @@ def cmd_train(args):
     model = load_model(args.model, device)
 
     for it in tqdm(range(args.iters)):
-        mcts = MCTS(engine, model, num_simulations=args.sims, device=device, batch_size=args.mcts_batch)
         all_data = []
         results = {"b": 0, "w": 0, "d": 0}
-        for _ in range(args.games_per_iter):
-            data, result = self_play_game(engine, mcts, temperature_moves=args.temp_moves)
-            all_data.extend(data)
-            results[result] += 1
-        hits, misses, hit_rate = mcts.cache_stats()
+
+        if args.selfplay_workers > 1:
+            seed_base = random.randrange(1, 2**31 - 1)
+            model_state = _cpu_state_dict(model)
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(
+                processes=args.selfplay_workers,
+                initializer=_init_selfplay_worker,
+                initargs=(
+                    model_state,
+                    args.device,
+                    args.sims,
+                    args.mcts_batch,
+                    args.temp_moves,
+                    seed_base,
+                ),
+            ) as pool:
+                hits = 0
+                misses = 0
+                for data, result, dh, dm in pool.imap_unordered(_selfplay_job, range(args.games_per_iter)):
+                    all_data.extend(data)
+                    results[result] += 1
+                    hits += dh
+                    misses += dm
+            total = hits + misses
+            hit_rate = (hits / total) if total else 0.0
+        else:
+            mcts = MCTS(engine, model, num_simulations=args.sims, device=device, batch_size=args.mcts_batch)
+            for _ in range(args.games_per_iter):
+                data, result = self_play_game(engine, mcts, temperature_moves=args.temp_moves)
+                all_data.extend(data)
+                results[result] += 1
+            hits, misses, hit_rate = mcts.cache_stats()
+
         print(
             f"iter {it + 1}: self-play {results}, samples={len(all_data)}, "
             f"cache hit {hit_rate * 100:.1f}% ({hits}/{hits + misses})"
@@ -310,6 +393,7 @@ def build_parser():
     tr.add_argument("--batch-size", type=int, default=64)
     tr.add_argument("--epochs", type=int, default=2)
     tr.add_argument("--lr", type=float, default=1e-3)
+    tr.add_argument("--selfplay-workers", type=int, default=1, help="self-play worker processes")
     tr.add_argument("--bench-interval", type=int, default=0, help="run benchmark every N iters (0=disable)")
     tr.add_argument("--bench-games", type=int, default=6, help="games per benchmark opponent")
     tr.add_argument("--device", default="cpu")
